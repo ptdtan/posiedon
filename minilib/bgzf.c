@@ -70,7 +70,6 @@ static const int GZIP_WINDOW_BITS = -15; // no zlib header
 static const int Z_DEFAULT_MEM_LEVEL = 8;
 
 
-inline
 void
 packInt16(uint8_t* buffer, uint16_t value)
 {
@@ -78,14 +77,12 @@ packInt16(uint8_t* buffer, uint16_t value)
     buffer[1] = value >> 8;
 }
 
-inline
 int
 unpackInt16(const uint8_t* buffer)
 {
     return (buffer[0] | (buffer[1] << 8));
 }
 
-inline
 void
 packInt32(uint8_t* buffer, uint32_t value)
 {
@@ -114,7 +111,7 @@ int bgzf_check_bgzf(const char *fn)
     uint8_t buf[10],magic[10]="\037\213\010\4\0\0\0\0\0\377";
     int n;
 
-    if ((fp = bgzf_open(fn, "r")) == 0) 
+    if ((fp = bgzf_open(fn, "r")) == 0)
     {
         fprintf(stderr, "[bgzf_check_bgzf] failed to open the file: %s\n",fn);
         return -1;
@@ -127,7 +124,7 @@ int bgzf_check_bgzf(const char *fn)
 #endif
     bgzf_close(fp);
 
-    if ( n!=10 ) 
+    if ( n!=10 )
         return -1;
 
     if ( !memcmp(magic, buf, 10) ) return 1;

@@ -156,7 +156,7 @@ typedef struct {
   @field  m_data     maximum length of bam1_t::data
   @field  data       all variable-length data, concatenated; structure: cigar-qname-seq-qual-aux
   @discussion Notes:
- 
+
    1. qname is zero tailing and core.l_qname includes the tailing '\0'.
    2. l_qseq is calculated from the total length of an alignment block
       on reading or from CIGAR.
@@ -369,4 +369,3 @@ unsigned int extract_read(bamFile in_bam, const bam_index_t *idx, int chr,
 #endif
 
 #endif
-

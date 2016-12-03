@@ -7,7 +7,7 @@
 #include <malloc.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include "../minilib/bam.h"
+#include "bam.h"
 
 #ifndef MAX_EDIT_DISTANCE
 #define MAX_EDIT_DISTANCE 2

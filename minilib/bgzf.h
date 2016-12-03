@@ -151,4 +151,3 @@ static inline int bgzf_getc(BGZF *fp)
 }
 
 #endif
-
