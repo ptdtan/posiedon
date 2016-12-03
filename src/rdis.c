@@ -9,6 +9,10 @@
 #include <stdio.h>
 #include "../minilib/bam.h"
 
+#ifndef MAX_EDIT_DISTANCE
+#define MAX_EDIT_DISTANCE 2
+#endif
+
 #ifndef DEBUG
 #define DEBUG(l,i) printf("l: %d, i: %d\n", l, i);
 #endif
@@ -30,30 +34,32 @@
 #endif
 
 #ifndef MERGE_SOFTCLIP_LEFT
-#define MERGE_SOFTCLIP_LEFT(cigar, l, pos, l_clip, l_match) \
+#define MERGE_SOFTCLIP_LEFT(cigar, l, pos, l_clip, l_match, e_dis) \
   l_clip = cigar[0]>>BAM_CIGAR_SHIFT; \
   l_match = cigar[1]>>BAM_CIGAR_SHIFT; \
   cigar[1] = bam_cigar_gen(l_clip + l_match, BAM_CMATCH); \
   SHIFT_LEFT(cigar, l); \
-  pos -= l_clip;
+  pos -= l_clip; \
+  e_dis+= l_clip;
 #endif
 
 #ifndef MERGE_SOFTCLIP_RIGHT
-#define MERGE_SOFTCLIP_RIGHT(cigar, l, l_clip, l_match) \
+#define MERGE_SOFTCLIP_RIGHT(cigar, l, l_clip, l_match, e_dis) \
   l_clip = cigar[l-1]>>BAM_CIGAR_SHIFT; \
   l_match = cigar[l-2]>>BAM_CIGAR_SHIFT; \
   cigar[l-2] = bam_cigar_gen(l_clip + l_match, BAM_CMATCH); \
   cigar[l-1] = 0; \
-  --l;
+  --l; \
+  e_dis+= l_clip;
 #endif
 
 #ifndef INDEL_AT_SPLICE
-#define INDEL_AT_SPLICE(cigar, flag, l, i) \
+#define INDEL_AT_SPLICE(cigar, l, i, flag) \
   flag = 0; \
   LOOP(i, 0, l-1){ \
     if(((bam_cigar_opchr(cigar[i])=='I' | bam_cigar_opchr(cigar[i])=='D' ) && bam_cigar_opchr(cigar[i+1])=='N')\
         | (bam_cigar_opchr(cigar[i])=='N' && (bam_cigar_opchr(cigar[i+1])=='I' | bam_cigar_opchr(cigar[i+1])=='D'))) \
-      { flag++; \
+      { flag = EXIT_FAILURE; \
         break; }\
   }
 #endif
@@ -121,6 +127,7 @@
 
 #ifndef EDIT_DISTANCE
 #define EDIT_DISTANCE(cigar, l, i, e_dis) \
+  e_dis = 0; \
   LOOP(i, 0, l){ \
     if(bam_cigar_opchr(cigar[i])=='S' | bam_cigar_opchr(cigar[i])=='D' | bam_cigar_opchr(cigar[i])=='I') \
       e_dis+=cigar[i]>>BAM_CIGAR_SHIFT;\
@@ -141,95 +148,131 @@
   LOOP(i,0,l){ \
     if(bam_cigar_opchr(cih))\
 }
-
 #endif
 
+#ifndef CHECK_SKIPPING
+#define CHECK_SKIPPING(cigar, l, i, flag) \
+  flag = 0; \
+  LOOP(i, 0, l){ \
+    if(bam_cigar_opchr(cigar[i])!='N') {\
+      flag=EXIT_FAILURE;\
+      break;\
+      }\
+  }
+#endif
 
 #ifndef MAX_SPLIT_AROUND
 #define MAX_SPLIT_AROUND 200
 #endif
 
-typedef struct {
+typedef struct
+{
   int32_t beg;
   int32_t end;
   int32_t tid;
-} Reg;
+} Junc;
 
-typedef struct {
+typedef struct
+{
   int32_t *cover;
-  int32_t *pos;
 } Bucket;
 
-Reg *init_reg(int32_t beg, int32_t end, int32_t tid){
-  Reg *ireg = (Reg*)malloc(sizeof(Reg));
-  ireg->beg = beg;
-  ireg->end = end;
-  ireg->tid = tid;
-  return ireg;
+Junc *init_reg(int32_t beg, int32_t end, int32_t tid)
+{
+  Junc *pjunc = (Junc*)malloc(sizeof(Junc));
+  pjunc->beg = beg;
+  pjunc->end = end;
+  pjunc->tid = tid;
+  return pjunc;
 }
 
-Bucket *init_bucket(void){
+Bucket *init_bucket(void)
+{
   Bucket *bucket = (Bucket*)malloc(sizeof(Bucket));
   bucket->cover = calloc(MAX_SPLIT_AROUND, sizeof(int32_t));
   memset(bucket->cover, 0, MAX_SPLIT_AROUND*sizeof(int32_t));
-  memset(bucket->pos, 0, MAX_SPLIT_AROUND*sizeof(int32_t));
-  bucket->pos = calloc(MAX_SPLIT_AROUND, sizeof(int32_t));
   return bucket;
 }
 
-void destroy_bucket(Bucket *bucket){
+void destroy_bucket(Bucket *bucket)
+{
   free(bucket->cover);
-  free(bucket->pos);
   free(bucket);
 }
 
-void destroy_reg(Reg *preg){
-  free(preg);
+void destroy_reg(Junc *pjunc)
+{
+  pjunc->beg = 0;
+  pjunc->end = 0;
+  pjunc->tid = 0;
+  free(pjunc);
 }
 
-void fill_bucket(bam1_t *read, Reg *region, Bucket *bucket){
+int fill_bucket(bam1_t *read, Junc **junctions, Bucket **bucket)
+{
   unsigned int *cigar;
-  unsigned int r_i = 0, i;
-  unsigned int c, l, p;
+  unsigned int i, cigar_c, flag;
+  unsigned int l, e_dis, lm1, lm2, l_indel;
+  int32_t p;
 
   cigar = bam1_cigar(read);
-  LOOP(i, 0, read->core.n_cigar){
-    c = bam_cigar_opchr(cigar[i]);
-    l = cigar[i]>>BAM_CIGAR_SHIFT;
+  l = read->core.n_cigar;
+  DEBUG_CIGAR(cigar, l, i, cigar_c)
+  CHECK_SKIPPING(cigar, l ,i, flag)
+  if(flag)
+    return EXIT_FAILURE;
+  INDEL_AT_SPLICE(cigar, l, i, flag)
+  if(flag)
+    return EXIT_FAILURE;
+  EDIT_DISTANCE(cigar, l, i, e_dis)
+  if(e_dis>MAX_EDIT_DISTANCE)
+    return EXIT_FAILURE;
+
+  p = read->core.pos;
+  DEBUG_CIGAR(cigar, l, i, cigar_c)
+  if(bam_cigar_opchr(cigar[l-1])=='S')
+  {
+    MERGE_SOFTCLIP_RIGHT(cigar, l, lm1, lm2, e_dis)
   }
+  if(bam_cigar_opchr(cigar[0])=='S')
+  {
+    MERGE_SOFTCLIP_LEFT(cigar, l, p, lm1, lm2, e_dis)
+  }
+  printf("after soft-clip remove: ");
+  DEBUG_CIGAR(cigar, l, i, cigar_c)
+  MERGE_INDEL(cigar, l, i , l_indel, cigar_c)
+  printf("after indel remove: ");
+  DEBUG_CIGAR(cigar, l, i, cigar_c)
+  return EXIT_SUCCESS;
 }
 
-int main(int argc, char *argv[]){
-  //int beg = atoi(argv[1]);
-  //int end = atoi(argv[2]);
-  int tid = 20, it, c_i, i, flag, l_id;
+int main(int argc, char *argv[])
+{
+  int beg = atoi(argv[1]);
+  int end = atoi(argv[2]);
+  int tid = 20, it, j, i, flag, l_id;
 	unsigned int len, e_dis = 0, cigar_c, pos, l_indel, l_m1, l_m2;
-  unsigned int *cigar_tmp;
+  uint32_t *cigar_tmp;
+  Bucket **buckets;
+  Junc **juncs;
+  bamFile fbam = bam_open(argv[3], "r");
+  bam_index_t *idx = bam_index_load(argv[3]);
+  bam1_t *reads;
 
-  /*bamFile fbam = bam_open(argv[3], "r");
-  bam_index_t *idx = bam_index_load(argv[3]);*/
-
-  /*Read_collect *rcollection = init_reads();
+  Read_collect *rcollection = init_reads();
   extract_read(fbam, idx, tid, beg, end, rcollection);
   printf("number of reads in %d and %d %d\n", beg, end, rcollection->n);
-  LOOP(it, 0, rcollection->n) {
-    cigar = bam1_cigar(&rcollection->r[it]);
-		len = rcollection->r[it].core.n_cigar;
-		pos = rcollection->r[it].core.pos;
-		e_dis = 0;
-    DEBUG_CIGAR(cigar, len, i, cigar_c)
-		if(bam_cigar_opchr(cigar[len-1])=='S')
-			{
-				MERGE_SOFTCLIP_RIGHT(cigar, len, e_dis)
-			}
-		if(bam_cigar_opchr(cigar[0])=='S')
-			{
-				MERGE_SOFTCLIP_LEFT(cigar, len, pos, e_dis)
-			}
-		DEBUG_CIGAR(cigar, len, i, cigar_c)
-		printf("\n");
-  }*/
-  unsigned int match = bam_cigar_gen(51, BAM_CMATCH); //800
+  reads = rcollection->r;
+  LOOP(i, 0, rcollection->n){
+    //int a = fill_bucket(&rcollection->r[i], juncs, buckets);
+    //if(a == EXIT_FAILURE){
+      //printf("accepted read: \n");
+      cigar_tmp = bam1_cigar(&reads[i]);
+      printf("%d \n", reads[i].core.n_cigar);
+      //DEBUG_CIGAR(cigar_tmp, rcollection->r[i].core.n_cigar, j, cigar_c)
+    }
+
+  /*unsigned int match = bam_cigar_gen(51, BAM_CMATCH); //800
   unsigned int softc =  bam_cigar_gen(52, BAM_CSOFT_CLIP); //804
   unsigned int del =  bam_cigar_gen(53, BAM_CDEL); //802
   unsigned int ins = bam_cigar_gen(54, BAM_CINS); // 801
@@ -252,6 +295,6 @@ int main(int argc, char *argv[]){
   DEBUG_CIGAR(cigar, len, i, cigar_c)
   printf("total edit-distance: %d\n", e_dis);
   DEBUG(len, i)
-  free(cigar);
+  free(cigar);*/
   return 0;
 }
